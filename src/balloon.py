@@ -7,30 +7,15 @@ import numpy as np
 from src.atmosphere import get as get_atmosphere
 
 
-def create(M_shell, M_payload, V_max, V_0, Cd=0.45):
+def create(M_shell, M_payload, V_max, V_0, Cd=0.45, k_elastic=500.0, verbose=True):
     """
     Создаёт словарь с параметрами шара.
-    
-    Параметры:
-        M_shell: масса оболочки, кг
-        M_payload: масса полезной нагрузки, кг
-        V_max: максимальный объём перед разрывом, м³
-        V_0: стартовый объём, м³
-        Cd: коэффициент лобового сопротивления (по умолчанию 0.45)
-    
-    Возвращает:
-        dict: словарь с параметрами шара
     """
-    # Газовая постоянная гелия
     R_He = 2077.0
     
-    # Получаем параметры атмосферы на уровне моря
     T0, p0, _ = get_atmosphere(0)
-    
-    # Масса гелия из уравнения состояния: M = p*V/(R*T)
     M_He = p0 * V_0 / (R_He * T0)
     
-    # Создаём словарь с параметрами
     balloon = {
         'M_shell': M_shell,
         'M_payload': M_payload,
@@ -38,22 +23,21 @@ def create(M_shell, M_payload, V_max, V_0, Cd=0.45):
         'V_0': V_0,
         'Cd': Cd,
         'R_He': R_He,
-        'M_He': M_He
+        'M_He': M_He,
+        'k_elastic': k_elastic,
+        'burst': False
     }
     
-    # Печатаем информацию для проверки
-    print(f"Масса гелия: {M_He:.3f} кг")
-    
-    # Проверяем, взлетит ли шар
-    T0, p0, rho0 = get_atmosphere(0)
-    F_b = (rho0 - p0/(R_He*T0)) * 9.81 * V_0
-    W = (M_shell + M_payload + M_He) * 9.81
-    print(f"Подъёмная сила: {F_b:.2f} Н, Вес: {W:.2f} Н")
-    
-    if F_b > W:
-        print("✓ Шар взлетит!")
-    else:
-        print("✗ Шар НЕ взлетит — увеличьте объём или уменьшите груз!")
+    if verbose:
+        print(f"Масса гелия: {M_He:.3f} кг")
+        T0, p0, rho0 = get_atmosphere(0)
+        F_b = (rho0 - p0/(R_He*T0)) * 9.81 * V_0
+        W = (M_shell + M_payload + M_He) * 9.81
+        print(f"Подъёмная сила: {F_b:.2f} Н, Вес: {W:.2f} Н")
+        if F_b > W:
+            print("✓ Шар взлетит!")
+        else:
+            print("✗ Шар НЕ взлетит!")
     
     return balloon
 
@@ -61,32 +45,34 @@ def create(M_shell, M_payload, V_max, V_0, Cd=0.45):
 def get_forces(balloon, z, v_z):
     """
     Рассчитывает силы, действующие на шар на высоте z.
-    
-    Параметры:
-        balloon: словарь с параметрами шара
-        z: текущая высота, м
-        v_z: текущая вертикальная скорость, м/с
-    
-    Возвращает:
-        a_z: ускорение, м/с²
-        V: текущий объём шара, м³
     """
-    # Получаем параметры атмосферы
     T, p, rho = get_atmosphere(z)
     
-    # Объём гелия (изотермическое расширение)
+    # Объём гелия по закону идеального газа
     V_He = balloon['M_He'] * balloon['R_He'] * T / p
+    
+    # Упругость оболочки: давление внутри = внешнее + натяжение резины
+    stretch = V_He / balloon['V_0']
+    delta_p = balloon['k_elastic'] * max(0, stretch - 1)
+    p_inside = p + delta_p
+    
+    # Пересчитываем объём с учётом упругости
+    V_He = balloon['M_He'] * balloon['R_He'] * T / p_inside
     V = min(V_He, balloon['V_max'])
     
-    # Подъёмная сила (Архимед минус вес гелия)
-    F_b = (rho - p / (balloon['R_He'] * T)) * 9.81 * V
+    # Проверка разрыва
+    if V_He >= balloon['V_max'] and not balloon['burst']:
+        balloon['burst'] = True
+        #print(f"⚠ Разрыв оболочки на высоте {z/1000:.1f} км!")
+    
+    # Подъёмная сила
+    F_b = (rho - p_inside / (balloon['R_He'] * T)) * 9.81 * V
     
     # Аэродинамическое сопротивление
     R_sph = (3 * V / (4 * np.pi)) ** (1 / 3)
     A_sph = np.pi * R_sph ** 2
     F_d = 0.5 * rho * balloon['Cd'] * A_sph * v_z * abs(v_z)
     
-    # Ускорение по второму закону Ньютона
     M_tot = balloon['M_shell'] + balloon['M_payload'] + balloon['M_He']
     a_z = (F_b - M_tot * 9.81 - F_d) / M_tot
     
